@@ -151,14 +151,18 @@ high demand.
 
 When was the maximum power load seen for house 1?
 
-```{r, house1_max}
+```{r, house1_max_min}
 h1_data %>% 
     select(timestamp, power) %>% 
     top_n(1, power)
+
+h1_data %>% 
+    select(timestamp, power) %>% 
+    top_n(-1, power)
 ```
 
-This value and time of day is quite consistent with someone taking a morning
-shower.
+This max value and time of day is quite consistent with someone taking a morning
+shower. The min value is non-negative, so sensible.
 
 ### Seasonal variation
 
@@ -189,6 +193,8 @@ vecs1 <- h1_data_std %>%
 
 pca1 <- prcomp(vecs1)
 
+plot(pca1)
+
 h1_data_std_pca <- h1_data_std %>%
     select(year, month, day, weekday) %>%
     bind_cols(as_data_frame(pca1$x[, 1:3]))
@@ -196,6 +202,113 @@ h1_data_std_pca <- h1_data_std %>%
 
 ```{r, h1_pca, fig.width = 10}
 h1_data_std_pca %>% 
-    ggplot(aes(x = PC1, y = PC2, colour = weekday)) + 
-    geom_point()
+    ggplot(aes(x = PC1, y = PC2)) + 
+    geom_point(alpha = 0.5) +
+    geom_vline(xintercept = 6500)
 ```
+
+There's a compact cluster at PC1 > 6500, with wide scatter
+at lower PC1 values. Can we find anything associated with this compact
+cluster? The figure below shows the relevant PCA vectors. The top
+plot shows the average diurnal power profile. The unsurprising low and
+quiescent night usage is following by a ramping up in the morning.
+The daytime average consumption stays reasonably high and spikey with
+a slight lull at about 3pm before climbing for the evening peak,
+which actually seems to present as a couple of peaks around 6:30pm
+and 8pm (dashed vertical lines). The compact cluster then
+is associated mostly with lower than average daytime consumption.
+
+```{r, h1_pca_explore, fig.width = 10, fig.height = 8}
+par(mfrow = c(2, 1))
+plot(x = (0:1439)/60, y = pca1$center, 
+     type = "l", main = "PCA mean vector",
+     xlab = "Hour of day", ylab = "Mean power")
+abline(v = 18.5, lty = 2)
+abline(v = 20, lty = 2)
+plot(x = (0:1439)/60, y = pca1$rotation[, 1], 
+     type = "l", main = "PCA first loadings",
+     xlab = "Hour of day", ylab = "PC1 loadings")
+
+h1_data_std_pca <- h1_data_std_pca %>%
+    mutate(high_PC1 = PC1 > 6500)
+```
+
+Another way of looking at this PCA score is by date, as shown below.
+The lower values of PC1 exhibit a clear seasonal variation, whereas the
+higher score values do not. Given the interpretation from the loadings that
+these higher PC1 scores are associated with lower than average daytime
+power consumption, that this level is quite consistent, and that they occur in
+some sort of discrete clumps, we might hypothesize that this is associated 
+with the house being vacant and with no human activity superimposed on its 
+base load. 
+
+```{r, h1_PC1_seasonal, fig.width = 10, fig.height = 8}
+h1_data_std_pca %>% 
+    unite(date, year, month, day, sep="/") %>% 
+    mutate(date = as.Date(date)) %>% 
+    ggplot() + 
+    geom_point(aes(x = date, y = PC1, colour = high_PC1)) +
+    labs(title = "House 1 showing strong seasonal variation in the lower PC1 scores") +
+    geom_vline(data = data.frame(date = as.Date(c("2013/03/31", "2014/04/20")), holiday = "Easter"),
+               aes(xintercept = date, linetype = holiday))
+```
+
+We can pick out the diurnal power utilization profiles for these proposed vacant
+days. Below we look at the first 9.
+
+```{r, h1_vacant_a, fig.width = 10, fig.height = 10}
+vacant <- h1_data_std_pca$high_PC1
+x <- (0:1439)/60
+par(mfrow = c(3, 3))
+for (i in 1:9) {
+    plot(x, vecs1[vacant, ][i, ], type = "l",
+         xlab = "Hour", ylab = "Power")
+}
+```
+
+**Oh dear**
+This isn't what we were hoping for! It looks like these are just bad days of
+data (recall when creating the standardized diurnal profiles we filled any
+missing values with 0) rather than anything more interesting. But our PCA
+loadings definitely suggested an interpretation consistent with lower than
+average daytime values, and not just random drop out. Let's persevere.
+Below we plot numbers 11 through 19. Now we see just one brief drop-out,
+and one day with anomalous high power draw over 2 kW, but apart from
+those, the profiles seem to show little to no diurnal pattern. There are
+two with a curious slightly elevated range from around 8 am to 8 pm of the
+order of a light bulb equivalent. It's interesting that these are a Saturday
+and Sunday. Otherwise, we do appear to have identified days where the only
+events occuring are the baseline "heartbeat" of the house (e.g. refridgerator).
+
+```{r, h1_vacant_b, fig.width = 10, fig.height = 10}
+vacant <- h1_data_std_pca$high_PC1
+weekday <- h1_data_std_pca$weekday[h1_data_std_pca$high_PC1]
+x <- (0:1439)/60
+par(mfrow = c(3, 3))
+for (i in 11:19) {
+    plot(x, vecs1[vacant, ][i, ], type = "l",
+         xlab = "Hour", ylab = "Power",
+         main = weekday[i])
+}
+```
+
+# Summary
+
+In this short note we have started to explore some high frequency (6 s interval)
+electricity power consumption data from a house and demonstrated that the
+application of PCA to standardized (to the minute) diurnal power profiles can
+identify candidate periods of vacancy. These then provide good opportunities for
+extracting (isolating) a relatively few background features of appliances running
+in the house without showers, toasters, kettles etc. randomly superposing themselves.
+
+It is far from perfect. In the interest of quickly demonstrating a proof of concept,
+a cluster of days was identified by application of a single threshold on the first
+principal component. More sophisticated methods would likely better isolate desired
+profiles.
+
+# Further work
+
+As well as using such baseline, relatively consistent profiles to identify the
+characteristics of some primary household signals that could then be detected 
+in more variable (messy) data, this approach could also be of interest applied 
+to multiple households to see if there were any clusters of similar households.
